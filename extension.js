@@ -14,7 +14,7 @@ const RECENT_CLICK_WINDOW_MS = 800;
 const APP_PRESS_WINDOW_MS = 3000;
 const PENDING_DUE_MS = 250;
 const PENDING_EXPIRE_MS = 1500;
-const MAX_TRACKED_APPS = 50;
+const MAX_TRACKED_APPS = 200;
 
 export default class OskFixExtension extends Extension {
     enable() {
@@ -360,18 +360,23 @@ export default class OskFixExtension extends Extension {
         if (!data || typeof data !== 'object')
             return;
         const keys = [['native', 'nativeCapable'], ['forceOpen', 'forceOpen']];
+        let fixed = false;
         for (const [key, flag] of keys) {
             if (!Array.isArray(data[key]))
                 continue;
             for (const id of data[key]) {
                 if (typeof id !== 'string')
                     continue;
-                const st = this._statsFor(id, true);
+                if (id.startsWith('window:')) {
+                    // Session-scoped ids churn between reboots; never reload them.
+                    fixed = true;
+                    continue;
+                }
+                const st = this._statsFor(id, true, false);
                 if (st && !st[flag])
                     st[flag] = true;
             }
         }
-        let fixed = false;
         for (const [, st] of this._appStats ?? []) {
             if (st.nativeCapable && st.forceOpen) {
                 st.forceOpen = false;
@@ -412,6 +417,8 @@ export default class OskFixExtension extends Extension {
         try {
             data = {native: [], forceOpen: []};
             for (const [id, st] of this._appStats) {
+                if (id.startsWith('window:'))
+                    continue;
                 if (st.nativeCapable)
                     data.native.push(id);
                 if (st.forceOpen)
@@ -458,17 +465,40 @@ export default class OskFixExtension extends Extension {
         }
     }
 
-    _statsFor(appId, create) {
+    _statsFor(appId, create, touched = true) {
         if (!appId || !this._appStats)
             return null;
         let st = this._appStats.get(appId);
-        if (!st && create) {
-            if (this._appStats.size >= MAX_TRACKED_APPS)
-                this._appStats.delete(this._appStats.keys().next().value);
-            st = {nativeCapable: false, forceOpen: false};
-            this._appStats.set(appId, st);
+        if (st) {
+            if (touched)
+                st.lastUsed = Date.now();
+            return st;
         }
-        return st ?? null;
+        if (!create)
+            return null;
+        if (this._appStats.size >= MAX_TRACKED_APPS)
+            this._evictOldestStat();
+        st = {
+            nativeCapable: false,
+            forceOpen: false,
+            lastUsed: touched ? Date.now() : 0,
+        };
+        this._appStats.set(appId, st);
+        return st;
+    }
+
+    _evictOldestStat() {
+        let oldestKey = null;
+        let oldestUsed = Infinity;
+        for (const [key, st] of this._appStats) {
+            const used = st.lastUsed ?? 0;
+            if (used < oldestUsed) {
+                oldestUsed = used;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey !== null)
+            this._appStats.delete(oldestKey);
     }
 
     _safePoll() {
