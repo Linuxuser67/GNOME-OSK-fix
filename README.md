@@ -43,6 +43,13 @@ gnome-extensions enable osk-fix@houssemko.github.io
 
 The extension is active only while *Settings → Accessibility → Screen Keyboard* is ON. Toggling it takes effect immediately — no reload needed.
 
+## Troubleshooting
+
+- If the journal reports a missing `gschemas.compiled`, compile the extension schemas:
+  `glib-compile-schemas ~/.local/share/gnome-shell/extensions/osk-fix@houssemko.github.io/schemas/`
+- To trace open/learn decisions, set `OSK_FIX_DEBUG=1` for the GNOME Shell process before login, then inspect:
+  `journalctl --user -b | grep osk-fix`
+
 ## License
 
 GPL-2.0-or-later — see [LICENSE](LICENSE) for details

@@ -215,7 +215,8 @@ export default class OskFixExtension extends Extension {
             if (global.stage.key_focus instanceof Clutter.Text)
                 return;
         } catch (e) {}
-        const st = this._statsFor(this._getAppId(), true);
+        const appId = this._getAppId();
+        const st = this._statsFor(appId, true);
         if (st) {
             let changed = false;
             if (!st.nativeCapable) {
@@ -226,8 +227,10 @@ export default class OskFixExtension extends Extension {
                 st.forceOpen = false;
                 changed = true;
             }
-            if (changed)
+            if (changed) {
+                this._debug('stock open marked native:', appId);
                 this._saveLearnedState();
+            }
         }
     }
 
@@ -385,6 +388,13 @@ export default class OskFixExtension extends Extension {
         } catch (e) {}
     }
 
+    _debug(...args) {
+        try {
+            if (GLib.getenv('OSK_FIX_DEBUG'))
+                console.log('[osk-fix]', ...args);
+        } catch (e) {}
+    }
+
     _saveLearnedState() {
         this._learnedDirty = true;
         if (this._saveInFlight)
@@ -520,6 +530,7 @@ export default class OskFixExtension extends Extension {
             const st = appId ? this._statsFor(appId, true) : null;
             if (isNewFocus && st && !st.forceOpen && !st.nativeCapable) {
                 st.forceOpen = true;
+                this._debug('learned forceOpen:', appId);
                 this._saveLearnedState();
             }
             const nativeCapable = !!st?.nativeCapable;
