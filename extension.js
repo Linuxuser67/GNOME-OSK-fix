@@ -14,7 +14,7 @@ const RECENT_CLICK_WINDOW_MS = 800;
 const APP_PRESS_WINDOW_MS = 3000;
 const PENDING_DUE_MS = 250;
 const PENDING_EXPIRE_MS = 1500;
-const MAX_TRACKED_APPS = 50;
+const MAX_TRACKED_APPS = 200;
 
 export default class OskFixExtension extends Extension {
     enable() {
@@ -53,13 +53,18 @@ export default class OskFixExtension extends Extension {
         this._a11y = null;
         try {
             this._settings = this.getSettings();
+        } catch (e) {
+            this._warn('extension settings unavailable (run glib-compile-schemas on schemas/):', e.message);
+        }
+        try {
             this._a11y = new Gio.Settings({ schema_id: 'org.gnome.desktop.a11y.applications' });
             if (!this._a11y.get_boolean('screen-keyboard-enabled')) {
                 this._a11y.set_boolean('screen-keyboard-enabled', true);
-                this._settings.set_boolean('previous-state', true);
+                this._settings?.set_boolean('previous-state', true);
             }
         } catch (e) {
-            this._warn('settings init failed, running unpersisted:', e.message);
+            this._warn('a11y settings unavailable:', e.message);
+            this._a11y = null;
         }
         this._loadLearnedState();
 
@@ -210,7 +215,8 @@ export default class OskFixExtension extends Extension {
             if (global.stage.key_focus instanceof Clutter.Text)
                 return;
         } catch (e) {}
-        const st = this._statsFor(this._getAppId(), true);
+        const appId = this._getAppId();
+        const st = this._statsFor(appId, true);
         if (st) {
             let changed = false;
             if (!st.nativeCapable) {
@@ -221,8 +227,10 @@ export default class OskFixExtension extends Extension {
                 st.forceOpen = false;
                 changed = true;
             }
-            if (changed)
+            if (changed) {
+                this._debug('stock open marked native:', appId);
                 this._saveLearnedState();
+            }
         }
     }
 
@@ -233,10 +241,10 @@ export default class OskFixExtension extends Extension {
             if (global.stage.key_focus instanceof Clutter.Text)
                 return false;
         } catch (e) {}
-        const recentPress = this._lastPointerPressTime > 0 &&
-            Date.now() - this._lastPointerPressTime < RECENT_CLICK_WINDOW_MS;
-        if (recentPress)
-            return false;
+        // NOTE: a recent-pointer-press condition used to live here, but both of
+        // its paths returned false, so it never blocked anything. Opens are
+        // only blocked when the user hid the keyboard, a11y suspended it, or
+        // the OSK actor does not exist.
         return false;
     }
 
@@ -352,18 +360,23 @@ export default class OskFixExtension extends Extension {
         if (!data || typeof data !== 'object')
             return;
         const keys = [['native', 'nativeCapable'], ['forceOpen', 'forceOpen']];
+        let fixed = false;
         for (const [key, flag] of keys) {
             if (!Array.isArray(data[key]))
                 continue;
             for (const id of data[key]) {
                 if (typeof id !== 'string')
                     continue;
-                const st = this._statsFor(id, true);
+                if (id.startsWith('window:')) {
+                    // Session-scoped ids churn between reboots; never reload them.
+                    fixed = true;
+                    continue;
+                }
+                const st = this._statsFor(id, true, false);
                 if (st && !st[flag])
                     st[flag] = true;
             }
         }
-        let fixed = false;
         for (const [, st] of this._appStats ?? []) {
             if (st.nativeCapable && st.forceOpen) {
                 st.forceOpen = false;
@@ -377,6 +390,13 @@ export default class OskFixExtension extends Extension {
     _warn(...args) {
         try {
             console.error('[osk-fix]', ...args);
+        } catch (e) {}
+    }
+
+    _debug(...args) {
+        try {
+            if (GLib.getenv('OSK_FIX_DEBUG'))
+                console.log('[osk-fix]', ...args);
         } catch (e) {}
     }
 
@@ -397,6 +417,8 @@ export default class OskFixExtension extends Extension {
         try {
             data = {native: [], forceOpen: []};
             for (const [id, st] of this._appStats) {
+                if (id.startsWith('window:'))
+                    continue;
                 if (st.nativeCapable)
                     data.native.push(id);
                 if (st.forceOpen)
@@ -443,17 +465,40 @@ export default class OskFixExtension extends Extension {
         }
     }
 
-    _statsFor(appId, create) {
+    _statsFor(appId, create, touched = true) {
         if (!appId || !this._appStats)
             return null;
         let st = this._appStats.get(appId);
-        if (!st && create) {
-            if (this._appStats.size >= MAX_TRACKED_APPS)
-                this._appStats.delete(this._appStats.keys().next().value);
-            st = {nativeCapable: false, forceOpen: false};
-            this._appStats.set(appId, st);
+        if (st) {
+            if (touched)
+                st.lastUsed = Date.now();
+            return st;
         }
-        return st ?? null;
+        if (!create)
+            return null;
+        if (this._appStats.size >= MAX_TRACKED_APPS)
+            this._evictOldestStat();
+        st = {
+            nativeCapable: false,
+            forceOpen: false,
+            lastUsed: touched ? Date.now() : 0,
+        };
+        this._appStats.set(appId, st);
+        return st;
+    }
+
+    _evictOldestStat() {
+        let oldestKey = null;
+        let oldestUsed = Infinity;
+        for (const [key, st] of this._appStats) {
+            const used = st.lastUsed ?? 0;
+            if (used < oldestUsed) {
+                oldestUsed = used;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey !== null)
+            this._appStats.delete(oldestKey);
     }
 
     _safePoll() {
@@ -515,6 +560,7 @@ export default class OskFixExtension extends Extension {
             const st = appId ? this._statsFor(appId, true) : null;
             if (isNewFocus && st && !st.forceOpen && !st.nativeCapable) {
                 st.forceOpen = true;
+                this._debug('learned forceOpen:', appId);
                 this._saveLearnedState();
             }
             const nativeCapable = !!st?.nativeCapable;
@@ -526,8 +572,9 @@ export default class OskFixExtension extends Extension {
 
             if (!visible && !requested &&
                 !this._userHidden && !this._hideButtonPressed) {
-                if (tapped) {
+                if (tapped && !nativeCapable) {
                     this._pendingForce = null;
+                    this._debug('open after tap:', appId, {nativeCapable, forceOpen});
                     keyboard.open(Main.layoutManager.focusIndex);
                 } else if (isNewFocus && !nativeCapable) {
                     const now = Date.now();
@@ -535,6 +582,7 @@ export default class OskFixExtension extends Extension {
                     if (forceOpen ||
                         (pending && pending.focus === focus && now >= pending.due)) {
                         this._pendingForce = null;
+                        this._debug('force open:', appId, {forceOpen, delayed: !!pending});
                         keyboard.open(Main.layoutManager.focusIndex);
                     } else if (!pending || pending.focus !== focus) {
                         this._pendingForce = {

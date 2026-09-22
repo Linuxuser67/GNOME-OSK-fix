@@ -4,7 +4,7 @@ A GNOME Shell extension that forces the native on-screen keyboard (OSK) to appea
 
 Native Wayland apps work out of the box; the keyboard is forced in apps that don't request it (Vivaldi, Chromium, Electron).
 
-> Only tested on GNOME 50.
+> Tested on GNOME 50 and 51.
 > **XWayland applications are not supported yet.**
 
 ## Installation
@@ -42,6 +42,13 @@ gnome-extensions enable osk-fix@houssemko.github.io
 ## Activation
 
 The extension is active only while *Settings → Accessibility → Screen Keyboard* is ON. Toggling it takes effect immediately — no reload needed.
+
+## Troubleshooting
+
+- If the journal reports a missing `gschemas.compiled`, compile the extension schemas:
+  `glib-compile-schemas ~/.local/share/gnome-shell/extensions/osk-fix@houssemko.github.io/schemas/`
+- To trace open/learn decisions, set `OSK_FIX_DEBUG=1` for the GNOME Shell process before login, then inspect:
+  `journalctl --user -b | grep osk-fix`
 
 ## License
 
