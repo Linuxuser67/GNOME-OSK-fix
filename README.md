@@ -4,7 +4,7 @@ A GNOME Shell extension that forces the native on-screen keyboard (OSK) to appea
 
 Native Wayland apps work out of the box; the keyboard is forced in apps that don't request it (Vivaldi, Chromium, Electron).
 
-> Only tested on GNOME 50.
+> Tested on GNOME 50 and 51.
 > **XWayland applications are not supported yet.**
 
 ## Installation
