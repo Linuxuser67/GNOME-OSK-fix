@@ -53,13 +53,18 @@ export default class OskFixExtension extends Extension {
         this._a11y = null;
         try {
             this._settings = this.getSettings();
+        } catch (e) {
+            this._warn('extension settings unavailable (run glib-compile-schemas on schemas/):', e.message);
+        }
+        try {
             this._a11y = new Gio.Settings({ schema_id: 'org.gnome.desktop.a11y.applications' });
             if (!this._a11y.get_boolean('screen-keyboard-enabled')) {
                 this._a11y.set_boolean('screen-keyboard-enabled', true);
-                this._settings.set_boolean('previous-state', true);
+                this._settings?.set_boolean('previous-state', true);
             }
         } catch (e) {
-            this._warn('settings init failed, running unpersisted:', e.message);
+            this._warn('a11y settings unavailable:', e.message);
+            this._a11y = null;
         }
         this._loadLearnedState();
 
