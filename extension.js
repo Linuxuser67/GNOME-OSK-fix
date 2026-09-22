@@ -241,10 +241,10 @@ export default class OskFixExtension extends Extension {
             if (global.stage.key_focus instanceof Clutter.Text)
                 return false;
         } catch (e) {}
-        const recentPress = this._lastPointerPressTime > 0 &&
-            Date.now() - this._lastPointerPressTime < RECENT_CLICK_WINDOW_MS;
-        if (recentPress)
-            return false;
+        // NOTE: a recent-pointer-press condition used to live here, but both of
+        // its paths returned false, so it never blocked anything. Opens are
+        // only blocked when the user hid the keyboard, a11y suspended it, or
+        // the OSK actor does not exist.
         return false;
     }
 
@@ -542,8 +542,9 @@ export default class OskFixExtension extends Extension {
 
             if (!visible && !requested &&
                 !this._userHidden && !this._hideButtonPressed) {
-                if (tapped) {
+                if (tapped && !nativeCapable) {
                     this._pendingForce = null;
+                    this._debug('open after tap:', appId, {nativeCapable, forceOpen});
                     keyboard.open(Main.layoutManager.focusIndex);
                 } else if (isNewFocus && !nativeCapable) {
                     const now = Date.now();
@@ -551,6 +552,7 @@ export default class OskFixExtension extends Extension {
                     if (forceOpen ||
                         (pending && pending.focus === focus && now >= pending.due)) {
                         this._pendingForce = null;
+                        this._debug('force open:', appId, {forceOpen, delayed: !!pending});
                         keyboard.open(Main.layoutManager.focusIndex);
                     } else if (!pending || pending.focus !== focus) {
                         this._pendingForce = {
