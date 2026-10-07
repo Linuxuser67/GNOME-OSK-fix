@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXT_DIR="$HOME/.local/share/gnome-shell/extensions/osk-fix@houssemko.github.io"
-REPO="https://github.com/Linuxuser67/osk-fix"
+REPO="https://github.com/Linuxuser67/GNOME-OSK-fix"
 VERSION="1.9"
 ZIP_URL="$REPO/releases/download/$VERSION/osk-fix%40houssemko.github.io.v$VERSION.shell-extension.zip"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,9 +24,11 @@ else
         exit 1
     fi
     TMP_ZIP="$(mktemp --suffix=.zip)"
+    trap 'rm -f "$TMP_ZIP"' EXIT
     curl -fsSL "$ZIP_URL" -o "$TMP_ZIP"
     unzip -oq "$TMP_ZIP" -d "$HOME/.local/share/gnome-shell/extensions/"
     rm -f "$TMP_ZIP"
+    trap - EXIT
 fi
 glib-compile-schemas "$EXT_DIR/schemas/"
 
