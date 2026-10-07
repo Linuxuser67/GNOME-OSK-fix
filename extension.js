@@ -10,7 +10,6 @@ import {
     InjectionManager,
 } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const RECENT_CLICK_WINDOW_MS = 800;
 const APP_PRESS_WINDOW_MS = 3000;
 const PENDING_DUE_MS = 250;
 const PENDING_EXPIRE_MS = 1500;
@@ -29,7 +28,6 @@ export default class OskFixExtension extends Extension {
         this._hideButtonPressed = false;
         this._a11ySuspended = false;
         this._a11yChangedId = 0;
-        this._lastPointerPressTime = 0;
         this._lastAppPress = null;
         this._prevInputFocus = null;
         this._closingProgrammatically = false;
@@ -38,6 +36,7 @@ export default class OskFixExtension extends Extension {
         this._pollFailed = false;
         this._learnedDirty = false;
         this._saveInFlight = false;
+        this._forcedA11y = false;
         this._appStats = new Map();
 
         this._injectionManager = new InjectionManager();
@@ -60,7 +59,10 @@ export default class OskFixExtension extends Extension {
             this._a11y = new Gio.Settings({ schema_id: 'org.gnome.desktop.a11y.applications' });
             if (!this._a11y.get_boolean('screen-keyboard-enabled')) {
                 this._a11y.set_boolean('screen-keyboard-enabled', true);
-                this._settings?.set_boolean('previous-state', true);
+                this._forcedA11y = true;
+                try {
+                    this._settings?.set_boolean('previous-state', true);
+                } catch (e) {}
             }
         } catch (e) {
             this._warn('a11y settings unavailable:', e.message);
@@ -150,15 +152,19 @@ export default class OskFixExtension extends Extension {
         this._lastDeviceIsTouchscreenOverride = null;
         this._originalLastDeviceIsTouchscreen = null;
 
-        if (this._settings?.get_boolean('previous-state')) {
-            this._a11y?.set_boolean('screen-keyboard-enabled', false);
-            this._settings.set_boolean('previous-state', false);
+        if (this._forcedA11y || this._settings?.get_boolean('previous-state')) {
+            try {
+                this._a11y?.set_boolean('screen-keyboard-enabled', false);
+            } catch (e) {}
+            try {
+                this._settings?.set_boolean('previous-state', false);
+            } catch (e) {}
         }
+        this._forcedA11y = false;
         this._a11y = null;
         this._settings = null;
 
         if (Main.keyboard?.visible) {
-            this._closingProgrammatically = true;
             Main.keyboard._keyboard?.close(true);
         }
     }
@@ -168,6 +174,8 @@ export default class OskFixExtension extends Extension {
             this._originalLastDeviceIsTouchscreen = keyboard._lastDeviceIsTouchscreen;
             this._lastDeviceIsTouchscreenOverride = () => true;
             keyboard._lastDeviceIsTouchscreen = this._lastDeviceIsTouchscreenOverride;
+        } else {
+            this._warn('touchscreen spoof inactive: _lastDeviceIsTouchscreen missing (Shell API changed?)');
         }
 
         const keyboardPrototype = Object.getPrototypeOf(keyboard);
@@ -199,6 +207,8 @@ export default class OskFixExtension extends Extension {
         if (openTarget && typeof openTarget.open === 'function') {
             this._injectionManager.overrideMethod(
                 openTarget, 'open', makeOpener(false));
+        } else {
+            this._warn('keyboard open override skipped: open() not found (Shell API changed?)');
         }
 
         if (Keyboard?.prototype && typeof Keyboard.prototype.open === 'function' &&
@@ -241,10 +251,6 @@ export default class OskFixExtension extends Extension {
             if (global.stage.key_focus instanceof Clutter.Text)
                 return false;
         } catch (e) {}
-        // NOTE: a recent-pointer-press condition used to live here, but both of
-        // its paths returned false, so it never blocked anything. Opens are
-        // only blocked when the user hid the keyboard, a11y suspended it, or
-        // the OSK actor does not exist.
         return false;
     }
 
@@ -281,7 +287,6 @@ export default class OskFixExtension extends Extension {
                 onChrome = !!Main.layoutManager.uiGroup?.contains(target);
             } catch (e) {}
             if (!onChrome) {
-                this._lastPointerPressTime = Date.now();
                 const pressApp = this._pressAppId(event);
                 if (pressApp)
                     this._lastAppPress = {appId: pressApp, time: Date.now()};
@@ -311,7 +316,7 @@ export default class OskFixExtension extends Extension {
             const styleClass = cur.style_class ||
                 (typeof cur.get_style_class_name === 'function' ? cur.get_style_class_name() : '');
             if (typeof styleClass === 'string' &&
-                (styleClass.includes('hide-key') || styleClass.includes('hide')))
+                styleClass.split(/\s+/).includes('hide-key'))
                 return true;
         }
         return false;
@@ -544,22 +549,22 @@ export default class OskFixExtension extends Extension {
             if (visible)
                 this._pendingForce = null;
 
-            const recentClick = this._lastPointerPressTime > 0 &&
-                Date.now() - this._lastPointerPressTime < RECENT_CLICK_WINDOW_MS;
-
+            const now = Date.now();
             const appId = this._getAppId();
-            const tappedApp = !!appId && !!this._lastAppPress &&
+            // Same-app tap only: a press in another app must not force-open here.
+            const tapped = !!appId && !!this._lastAppPress &&
                 this._lastAppPress.appId === appId &&
-                Date.now() - this._lastAppPress.time < APP_PRESS_WINDOW_MS;
-            const tapped = recentClick || tappedApp;
+                now - this._lastAppPress.time < APP_PRESS_WINDOW_MS;
             const isNewFocus = !this._prevInputFocus;
             if (isNewFocus) {
                 this._prevInputFocus = focus;
                 this._pendingForce = null;
             }
             const st = appId ? this._statsFor(appId, true) : null;
+            let justLearned = false;
             if (isNewFocus && st && !st.forceOpen && !st.nativeCapable) {
                 st.forceOpen = true;
+                justLearned = true;
                 this._debug('learned forceOpen:', appId);
                 this._saveLearnedState();
             }
@@ -567,7 +572,7 @@ export default class OskFixExtension extends Extension {
             const forceOpen = !!st?.forceOpen;
 
             const p = this._pendingForce;
-            if (p && (p.focus !== focus || Date.now() > p.expires))
+            if (p && (p.focus !== focus || now > p.expires))
                 this._pendingForce = null;
 
             if (!visible && !requested &&
@@ -577,9 +582,8 @@ export default class OskFixExtension extends Extension {
                     this._debug('open after tap:', appId, {nativeCapable, forceOpen});
                     keyboard.open(Main.layoutManager.focusIndex);
                 } else if (isNewFocus && !nativeCapable) {
-                    const now = Date.now();
                     const pending = this._pendingForce;
-                    if (forceOpen ||
+                    if ((forceOpen && !justLearned) ||
                         (pending && pending.focus === focus && now >= pending.due)) {
                         this._pendingForce = null;
                         this._debug('force open:', appId, {forceOpen, delayed: !!pending});
