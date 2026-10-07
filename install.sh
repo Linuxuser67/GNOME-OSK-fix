@@ -3,7 +3,7 @@ set -euo pipefail
 
 EXT_DIR="$HOME/.local/share/gnome-shell/extensions/osk-fix@houssemko.github.io"
 REPO="https://github.com/Linuxuser67/GNOME-OSK-fix"
-VERSION="1.9"
+VERSION="1.10"
 ZIP_URL="$REPO/releases/download/$VERSION/osk-fix%40houssemko.github.io.v$VERSION.shell-extension.zip"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 FILES=(extension.js metadata.json README.md LICENSE)
