@@ -10,7 +10,6 @@ import {
     InjectionManager,
 } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const APP_PRESS_WINDOW_MS = 3000;
 const PENDING_DUE_MS = 250;
 const PENDING_EXPIRE_MS = 1500;
 const MAX_TRACKED_APPS = 200;
@@ -28,7 +27,6 @@ export default class OskFixExtension extends Extension {
         this._hideButtonPressed = false;
         this._a11ySuspended = false;
         this._a11yChangedId = 0;
-        this._lastAppPress = null;
         this._prevInputFocus = null;
         this._closingProgrammatically = false;
         this._viaManager = false;
@@ -142,7 +140,6 @@ export default class OskFixExtension extends Extension {
         this._pendingForce = null;
         this._learnedDirty = false;
         this._saveInFlight = false;
-        this._lastAppPress = null;
 
         if (Main.keyboard &&
             this._lastDeviceIsTouchscreenOverride &&
@@ -245,6 +242,10 @@ export default class OskFixExtension extends Extension {
     }
 
     _openBlocked() {
+        try {
+            if (Main.overview?.visible)
+                return true;
+        } catch (e) {}
         if (this._userHidden || this._hideButtonPressed || this._a11ySuspended || !this._oskAvailable())
             return true;
         try {
@@ -281,32 +282,16 @@ export default class OskFixExtension extends Extension {
 
             this._userHidden = false;
             this._hideButtonPressed = false;
-            let onChrome = false;
-            try {
-                const target = global.stage.get_event_actor(event);
-                onChrome = !!Main.layoutManager.uiGroup?.contains(target);
-            } catch (e) {}
-            if (!onChrome) {
-                const pressApp = this._pressAppId(event);
-                if (pressApp)
-                    this._lastAppPress = {appId: pressApp, time: Date.now()};
+            // Observed presses outside the keyboard dismiss it. (In-app
+            // mouse presses never reach the stage: mutter forwards them to
+            // the client with EVENT_STOP, so only Shell-chrome presses and
+            // touch taps arrive here.)
+            if (kbd && kbd.visible) {
+                this._closingProgrammatically = true;
+                kbd.close(true);
+                this._debug('hide on outside press');
             }
         } catch (e) {}
-    }
-
-    _pressAppId(event) {
-        try {
-            const target = global.stage.get_event_actor(event);
-            let cur = target;
-            while (cur) {
-                const win = cur.meta_window ||
-                    (typeof cur.get_meta_window === 'function' ? cur.get_meta_window() : null);
-                if (win)
-                    return this._appIdForWindow(win);
-                cur = typeof cur.get_parent === 'function' ? cur.get_parent() : null;
-            }
-        } catch (e) {}
-        return null;
     }
 
     _isHideButton(actor) {
@@ -541,6 +526,21 @@ export default class OskFixExtension extends Extension {
 
         const requested = !!(kbd && kbd._keyboardRequested);
 
+        try {
+            if (Main.overview?.visible) {
+                this._pendingForce = null;
+                if (visible) {
+                    this._closingProgrammatically = true;
+                    if (kbd)
+                        kbd.close(true);
+                    else
+                        keyboard.close();
+                }
+                this._prevInputFocus = focus;
+                return;
+            }
+        } catch (e) {}
+
         const focusChanged = this._prevInputFocus !== null && this._prevInputFocus !== focus;
         if (focusChanged)
             this._prevInputFocus = null;
@@ -551,14 +551,14 @@ export default class OskFixExtension extends Extension {
 
             const now = Date.now();
             const appId = this._getAppId();
-            // Same-app tap only: a press in another app must not force-open here.
-            const tapped = !!appId && !!this._lastAppPress &&
-                this._lastAppPress.appId === appId &&
-                now - this._lastAppPress.time < APP_PRESS_WINDOW_MS;
             const isNewFocus = !this._prevInputFocus;
             if (isNewFocus) {
                 this._prevInputFocus = focus;
                 this._pendingForce = null;
+                // A new focus re-arms: the hide was for the old one.
+                // (In-app taps never reach us, so nothing else can.)
+                this._userHidden = false;
+                this._hideButtonPressed = false;
             }
             const st = appId ? this._statsFor(appId, true) : null;
             let justLearned = false;
@@ -577,11 +577,7 @@ export default class OskFixExtension extends Extension {
 
             if (!visible && !requested &&
                 !this._userHidden && !this._hideButtonPressed) {
-                if (tapped && !nativeCapable) {
-                    this._pendingForce = null;
-                    this._debug('open after tap:', appId, {nativeCapable, forceOpen});
-                    keyboard.open(Main.layoutManager.focusIndex);
-                } else if (isNewFocus && !nativeCapable) {
+                if (isNewFocus && !nativeCapable) {
                     const pending = this._pendingForce;
                     if ((forceOpen && !justLearned) ||
                         (pending && pending.focus === focus && now >= pending.due)) {
